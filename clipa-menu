@@ -1,0 +1,55 @@
+#!/bin/bash
+
+HISTORY_FILE="$HOME/.clipboard_history.txt"
+touch "$HISTORY_FILE"
+
+if [ ! -s "$HISTORY_FILE" ]; then
+    rofi -e "Clipboard history is empty!"
+    exit 0
+fi
+
+# Prepare your copy list (newest first, displaying raw file lines)
+DISPLAY_LIST=$(tac "$HISTORY_FILE")
+
+# Open rofi with custom keybindings and bottom safety message
+SELECTION=$(echo "$DISPLAY_LIST" | rofi -dmenu \
+    -p "Clipboard History" \
+    -mesg "Press [Alt + c] to clear history entirely" \
+    -kb-custom-1 "Alt+c" \
+    -config /dev/null)
+
+# Capture rofi's exit status
+EXIT_CODE=$?
+
+# CASE 1: Wipe all clipboard history (Alt + c)
+if [ "$EXIT_CODE" -eq 10 ]; then
+    CONFIRM=$(echo -e "No\nYes" | rofi -dmenu -p "Wipe all clipboard history?" -config /dev/null)
+    if [ "$CONFIRM" = "Yes" ]; then
+        > "$HISTORY_FILE"
+        rofi -e "Clipboard history has been successfully cleared!"
+    fi
+    exit 0
+fi
+
+# Exit early if the user canceled out (pressed Escape or clicked away)
+if [ -z "$SELECTION" ] || [ "$EXIT_CODE" -ne 0 ]; then
+    exit 0
+fi
+
+# CASE 2: Normal execution (Select and Copy to Clipboard)
+SEARCH_TARGET=$(echo "$SELECTION")
+RAW_MATCH=$(grep -F -x "$SEARCH_TARGET" "$HISTORY_FILE" | tail -n 1)
+
+# DECODE REPAIR: Safely convert structural placeholder tags back into actual newlines
+if [[ "$RAW_MATCH" == *"[NEWLINE_PLACEHOLDER]"* ]]; then
+    DECODED_TEXT=$(echo "$RAW_MATCH" | awk '{gsub(/\[NEWLINE_PLACEHOLDER\]/, "\n"); print}')
+else
+    DECODED_TEXT="$RAW_MATCH"
+fi
+
+# Cross-platform output routing based on active display server
+if [ -n "$WAYLAND_DISPLAY" ]; then
+    echo -n "$DECODED_TEXT" | wl-copy
+else
+    echo -ne "$DECODED_TEXT" | xclip -selection clipboard
+fi

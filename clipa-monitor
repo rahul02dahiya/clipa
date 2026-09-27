@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Path to your clipboard history file
+HISTORY_FILE="$HOME/.clipboard_history.txt"
+CLIPNOTIFYPATH="$HOME/.local/bin/clipnotify"
+
+# Ensure history file exists so utilities don't throw errors
+touch "$HISTORY_FILE"
+
+# Core formatting block handled via a single-pass optimized function
+process_and_save() {
+    local raw_clip="$1"
+    if [ -z "$raw_clip" ]; then
+        return
+    fi
+    
+    # Get the last saved entry to pass into our single optimization step
+    local last_saved
+    last_saved=$(tail -n 1 "$HISTORY_FILE")
+
+    # Let awk format the string and decide if it's a duplicate at the exact same time
+    local new_entry
+    new_entry=$(printf "%s" "$raw_clip" | awk -v last="$last_saved" '
+        {
+            # Flatten the multi-line content horizontally
+            printf "%s%s", (NR==1?"":"[NEWLINE_PLACEHOLDER]"), $0
+        }
+        END {
+            # Direct environment check inside awk to avoid slow Bash variable processing
+            if (ENVIRON["AWK_RESULT"] == last) {
+                exit 1
+            }
+        }
+    ' 2>/dev/null)
+
+    # If unique, append it directly to our database file
+    if [ -n "$new_entry" ]; then
+        echo "$new_entry" >> "$HISTORY_FILE"
+    fi
+}
+
+echo "Clipa background engine active..."
+
+# ENGINE MODE 1: WAYLAND DETECTION (e.g., Ubuntu 22 without Sudo)
+if [ -n "$WAYLAND_DISPLAY" ]; then
+    echo "Wayland environment detected! Using native watch protocols..."
+    export -f process_and_save
+    export HISTORY_FILE
+    
+    # Event-driven mechanism completely native to Wayland user space
+    wl-paste --type text --watch bash -c 'process_and_save "$(cat)"'
+    exit 0
+fi
+
+# ENGINE MODE 2: X11 MONITORING (e.g., Kali Linux with Sudo Clipnotify)
+if [ -f "$CLIPNOTIFYPATH" ]; then
+    echo "X11 environment detected! Using compiled clipnotify hook..."
+    while "$CLIPNOTIFYPATH"; do
+        CURRENT_CLIP=$(xclip -selection clipboard -o 2>/dev/null)
+        process_and_save "$CURRENT_CLIP"
+    done
+else
+    echo "Error: Neither Wayland display nor clipnotify binary found."
+    echo "Please run setup.sh to configure the platform dependencies correctly."
+    exit 1
+fi

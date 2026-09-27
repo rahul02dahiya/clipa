@@ -1,6 +1,8 @@
 #!/bin/bash
 
 HISTORY_FILE="$HOME/.clipboard_history.txt"
+LOCK_FILE="/tmp/clipa.lock"
+
 touch "$HISTORY_FILE"
 
 if [ ! -s "$HISTORY_FILE" ]; then
@@ -47,9 +49,17 @@ else
     DECODED_TEXT="$RAW_MATCH"
 fi
 
-# Cross-platform output routing based on active display server
+# Create lock file to stop clipa-monitor from recording this specific event
+touch "$LOCK_FILE"
+
 if [ -n "$WAYLAND_DISPLAY" ]; then
     echo -n "$DECODED_TEXT" | wl-copy
 else
     echo -ne "$DECODED_TEXT" | xclip -selection clipboard
 fi
+
+# Small delay to ensure the clipboard engine has fully registered the item
+sleep 0.1
+
+# Remove the lock file so regular user copies are captured again
+rm -f "$LOCK_FILE"

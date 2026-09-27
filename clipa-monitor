@@ -3,6 +3,21 @@
 # Path to your clipboard history file
 HISTORY_FILE="$HOME/.clipboard_history.txt"
 CLIPNOTIFYPATH="$HOME/.local/bin/clipnotify"
+LOCK_FILE="/tmp/clipa.lock"
+PID_FILE="/tmp/clipa-monitor.pid"
+
+# --- Single-instance guard ---
+# Prevents two copies of this daemon racing on the same clipboard events
+# (which was silently doubling/tripling entries history file).
+if [ -f "$PID_FILE" ]; then
+    OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "clipa-monitor is already running (PID $OLD_PID). Exiting."
+        exit 1
+    fi
+fi
+echo $$ > "$PID_FILE"
+trap 'rm -f "$PID_FILE"' EXIT
 
 # Ensure history file exists so utilities don't throw errors
 touch "$HISTORY_FILE"
@@ -13,29 +28,24 @@ process_and_save() {
     if [ -z "$raw_clip" ]; then
         return
     fi
-    
-    # Get the last saved entry to pass into our single optimization step
+
+    # Anti-loop check: Ignore the event if clipa-menu created the lock file
+    if [ -f "$LOCK_FILE" ]; then
+        return
+    fi
+
+    # Flatten multi-line content onto one row using the same placeholder
+    # scheme clipa-menu already knows how to decode.
+    local encoded
+    encoded=$(printf '%s' "$raw_clip" | awk 'BEGIN{ORS="[NEWLINE_PLACEHOLDER]"} {print}')
+    encoded="${encoded%\[NEWLINE_PLACEHOLDER\]}"
+
     local last_saved
-    last_saved=$(tail -n 1 "$HISTORY_FILE")
+    last_saved=$(tail -n 1 "$HISTORY_FILE" 2>/dev/null)
 
-    # Let awk format the string and decide if it's a duplicate at the exact same time
-    local new_entry
-    new_entry=$(printf "%s" "$raw_clip" | awk -v last="$last_saved" '
-        {
-            # Flatten the multi-line content horizontally
-            printf "%s%s", (NR==1?"":"[NEWLINE_PLACEHOLDER]"), $0
-        }
-        END {
-            # Direct environment check inside awk to avoid slow Bash variable processing
-            if (ENVIRON["AWK_RESULT"] == last) {
-                exit 1
-            }
-        }
-    ' 2>/dev/null)
-
-    # If unique, append it directly to our database file
-    if [ -n "$new_entry" ]; then
-        echo "$new_entry" >> "$HISTORY_FILE"
+    # Only append if this is genuinely different from the last entry
+    if [ "$encoded" != "$last_saved" ]; then
+        echo "$encoded" >> "$HISTORY_FILE"
     fi
 }
 
@@ -46,13 +56,14 @@ if [ -n "$WAYLAND_DISPLAY" ]; then
     echo "Wayland environment detected! Using native watch protocols..."
     export -f process_and_save
     export HISTORY_FILE
-    
+    export LOCK_FILE
+
     # Event-driven mechanism completely native to Wayland user space
     wl-paste --type text --watch bash -c 'process_and_save "$(cat)"'
     exit 0
 fi
 
-# ENGINE MODE 2: X11 MONITORING (e.g., Kali Linux with Sudo Clipnotify)
+# ENGINE MODE 2: X11 MONITORING (e.g., Kali Linux with compiled clipnotify)
 if [ -f "$CLIPNOTIFYPATH" ]; then
     echo "X11 environment detected! Using compiled clipnotify hook..."
     while "$CLIPNOTIFYPATH"; do
